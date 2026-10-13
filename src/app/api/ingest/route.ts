@@ -1,5 +1,6 @@
 import { isCorrectIngestToken } from "@/lib/auth";
 import { normalizeReport } from "@/lib/normalize";
+import { keepsCurrentSnapshot } from "@/lib/snapshot";
 import { getStore } from "@/lib/store";
 import { reportSchema } from "@/lib/types";
 
@@ -34,9 +35,9 @@ export async function POST(request: Request): Promise<Response> {
     return reply(400, `Invalid report at ${issue.path.join(".") || "root"}: ${issue.message}`);
   }
 
-  const { snapshot, deals, signals } = normalizeReport(parsed.data, Math.floor(Date.now() / 1000));
-  // A backfill adds history but must not overwrite the status the EA itself reported.
-  const keepEaSnapshot = snapshot.source === "backfill" && (await store.loadSnapshot())?.source === "ea";
-  await store.save(keepEaSnapshot ? null : snapshot, deals, signals);
+  const now = Math.floor(Date.now() / 1000);
+  const { snapshot, deals, signals } = normalizeReport(parsed.data, now);
+  const keepCurrent = keepsCurrentSnapshot(await store.loadSnapshot(), snapshot, now);
+  await store.save(keepCurrent ? null : snapshot, deals, signals);
   return reply(200);
 }
