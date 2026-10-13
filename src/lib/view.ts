@@ -1,7 +1,8 @@
 import type { EdgePoint } from "@/components/EdgeChart";
 import type { PnlPoint } from "@/components/PnlChart";
-import type { StatItem, TradeFilter, TradeRow } from "@/components/TradesPanel";
-import { BACKTEST, expectedPath, MIN_TRADES_TO_JUDGE, verdict, type ExpectedPoint } from "./benchmark";
+import type { StatItem, TradeRow } from "@/components/TradesPanel";
+import { backtestFor, expectedPath, MIN_TRADES_TO_JUDGE, verdict, type Backtest, type ExpectedPoint } from "./benchmark";
+import { dailyResults, dayKey } from "./calendar";
 import {
   formatAge,
   formatDate,
@@ -14,14 +15,17 @@ import {
   formatR,
   formatSignedMoney,
 } from "./format";
-import { dailyResults, dayKey } from "./calendar";
+import { buildGroups, MANUAL_GROUP, type Group } from "./groups";
 import { STALE_AFTER_SECONDS } from "./snapshot";
-import { buildTrades, cashFlow, computeStats, firstActivity, type CashKind, type Trade, type TradeStats } from "./trades";
-import type { DashboardData, Signal, Snapshot } from "./types";
+import { buildTrades, cashFlow, computeStats, firstActivity, MANUAL, type CashKind, type Trade, type TradeStats } from "./trades";
+import type { DashboardData, EaState, Signal } from "./types";
 
-const DEFAULT_EA_MAGIC = 20261013;
 const MIN_CHART_TRADES = 40;
-const MAX_SIGNAL_ROWS = 100;
+const MAX_SIGNAL_ROWS = 150;
+export const ALL = "all";
+
+export type Outcome = "win" | "loss" | "flat";
+export type EaStatus = "running" | "down";
 
 export interface BenchmarkRow {
   metric: string;
@@ -29,9 +33,32 @@ export interface BenchmarkRow {
   backtest: string;
 }
 
+export interface SetupView extends Group {
+  market: string;
+  status: { state: EaStatus; label: string; detail: string };
+  risk: string;
+  riskMoney: string;
+  filterOn: boolean;
+  ratio: number;
+  ratioMin: number;
+  lossesToday: number;
+  net: string;
+  netOutcome: Outcome;
+  /** Null when no backtest exists for the setup's timeframe. */
+  comparison: {
+    verdict: string;
+    description: string;
+    rows: BenchmarkRow[];
+    live: EdgePoint[];
+    expected: ExpectedPoint[];
+  } | null;
+}
+
 export interface SignalRow {
   key: string;
   time: string;
+  setup: string;
+  color: number;
   dir: Signal["dir"];
   close: string;
   ratio: string;
@@ -49,7 +76,7 @@ export interface CashRow {
 
 export interface PositionRow {
   ticket: number;
-  source: "ea" | "manual";
+  group: Group;
   side: "buy" | "sell";
   volume: string;
   entry: string;
@@ -57,18 +84,20 @@ export interface PositionRow {
   tp: string;
   current: string;
   profit: string;
-  outcome: "win" | "loss" | "flat";
+  outcome: Outcome;
   opened: string;
 }
 
-const outcomeOf = (value: number): "win" | "loss" | "flat" => (value > 0 ? "win" : value < 0 ? "loss" : "flat");
+const outcomeOf = (value: number): Outcome => (value > 0 ? "win" : value < 0 ? "loss" : "flat");
 
 const EXIT_LABEL: Record<Trade["exitReason"], string> = { target: "Target", stop: "Stop", other: "Manual or EA close" };
 
-function tradeRow(trade: Trade): TradeRow {
+function tradeRow(trade: Trade, group: Group): TradeRow {
   return {
     id: trade.id,
     source: trade.source,
+    sourceLabel: group.label,
+    color: group.color,
     closed: formatDateTime(trade.closeTime),
     side: trade.side,
     volume: trade.volume.toFixed(2),
@@ -94,8 +123,8 @@ function statItems(stats: TradeStats, withR: boolean): StatItem[] {
   return withR ? [...base, { label: "Average R", value: formatR(stats.avgR) }, { label: "Total R", value: formatR(stats.totalR) }] : base;
 }
 
-function verdictText(stats: TradeStats): string {
-  switch (verdict(stats.totalR, stats.rCount)) {
+function verdictText(stats: TradeStats, backtest: Backtest): string {
+  switch (verdict(stats.totalR, stats.rCount, backtest)) {
     case "too-early":
       return `${stats.rCount} of ${MIN_TRADES_TO_JUDGE} trades needed before the live result says anything about the edge.`;
     case "in-range":
@@ -107,11 +136,49 @@ function verdictText(stats: TradeStats): string {
   }
 }
 
-function signalRow(signal: Signal): SignalRow {
+function edgePoints(trades: Trade[]): EdgePoint[] {
+  let cumulative = 0;
+  return trades
+    .filter((trade): trade is Trade & { r: number } => trade.r !== null)
+    .map((trade, index) => {
+      cumulative += trade.r;
+      return { n: index + 1, r: trade.r, cumulative, label: formatDateTime(trade.closeTime) };
+    });
+}
+
+function comparisonFor(trades: Trade[], stats: TradeStats, backtest: Backtest | null): SetupView["comparison"] {
+  if (!backtest) return null;
+  return {
+    verdict: verdictText(stats, backtest),
+    description: backtest.description,
+    rows: [
+      { metric: "Trades", live: String(stats.count), backtest: String(backtest.trades) },
+      { metric: "Win rate", live: formatPercent(stats.winRate), backtest: formatPercent(backtest.winRate) },
+      { metric: "Average per trade", live: formatR(stats.avgR), backtest: formatR(backtest.avgR) },
+      { metric: "Trades per month", live: stats.count ? formatNumber(stats.tradesPerMonth, 1) : "–", backtest: backtest.tradesPerMonth.toFixed(1) },
+      { metric: "Worst drawdown", live: stats.rCount ? `${stats.maxDrawdownR.toFixed(1)}R` : "–", backtest: `${backtest.maxDrawdownR}R` },
+      { metric: "Longest losing streak", live: stats.count ? String(stats.longestLosingStreak) : "–", backtest: String(backtest.longestLosingStreak) },
+    ],
+    live: edgePoints(trades),
+    expected: expectedPath(Math.max(MIN_CHART_TRADES, stats.rCount + 10), backtest),
+  };
+}
+
+function statusOf(ea: EaState, nowSeconds: number): SetupView["status"] {
+  const age = nowSeconds - ea.receivedAt;
+  const detail = `Last report ${formatAge(age)}`;
+  if (age > STALE_AFTER_SECONDS) return { state: "down", label: "Silent", detail };
+  if (!ea.algo_enabled) return { state: "down", label: "Algo Trading off", detail };
+  return { state: "running", label: "Running", detail };
+}
+
+function signalRow(signal: Signal, group: Group | undefined): SignalRow {
   const traded = signal.action === "traded";
   return {
-    key: `${signal.time}:${signal.dir}`,
+    key: `${signal.magic}:${signal.time}:${signal.dir}`,
     time: formatDateTime(signal.time),
+    setup: group?.label ?? String(signal.magic),
+    color: group?.color ?? MANUAL_GROUP.color,
     dir: signal.dir,
     close: formatPrice(signal.close),
     ratio: signal.ratio.toFixed(2),
@@ -120,73 +187,58 @@ function signalRow(signal: Signal): SignalRow {
   };
 }
 
-function pnlPoints(trades: Trade[]): PnlPoint[] {
-  const totals = { ea: 0, manual: 0 };
+function pnlPoints(trades: Trade[], groups: Group[]): PnlPoint[] {
+  let totals: Record<string, number> = Object.fromEntries(groups.map((g) => [g.key, 0]));
   return trades.map((trade) => {
-    totals[trade.source] += trade.profit;
-    return { time: trade.closeTime, label: formatDateTime(trade.closeTime), source: trade.source, profit: trade.profit, ea: totals.ea, manual: totals.manual };
+    totals = { ...totals, [trade.source]: (totals[trade.source] ?? 0) + trade.profit };
+    return { time: trade.closeTime, label: formatDateTime(trade.closeTime), source: trade.source, profit: trade.profit, totals };
   });
-}
-
-function edgePoints(eaTrades: Trade[]): EdgePoint[] {
-  let cumulative = 0;
-  return eaTrades
-    .filter((trade): trade is Trade & { r: number } => trade.r !== null)
-    .map((trade, index) => {
-      cumulative += trade.r;
-      return { n: index + 1, r: trade.r, cumulative, label: formatDateTime(trade.closeTime) };
-    });
-}
-
-export type EaState = "running" | "down" | "unknown";
-
-/** The EA's state comes only from the EA's own reports; a backfill from another terminal cannot know it. */
-function eaStatus(snapshot: Snapshot | null, age: number | null): { state: EaState; label: string; detail: string } {
-  if (!snapshot || age === null) return { state: "unknown", label: "Waiting for the EA's first report", detail: "No data yet" };
-  if (snapshot.source === "backfill") {
-    return { state: "unknown", label: "Waiting for the EA's first report", detail: `Account data loaded from MT5 ${formatAge(age)}` };
-  }
-  const detail = `Last report from the VPS ${formatAge(age)}`;
-  if (age > STALE_AFTER_SECONDS) return { state: "down", label: "EA silent", detail };
-  if (!snapshot.ea.algo_enabled) return { state: "down", label: "Algo Trading is off on the VPS", detail };
-  return { state: "running", label: "EA running on the VPS", detail };
 }
 
 export function buildView(data: DashboardData, nowSeconds: number) {
   const { snapshot, deals, signals } = data;
-  const magic = snapshot?.ea.magic ?? DEFAULT_EA_MAGIC;
-  const trades = buildTrades(deals, magic);
-  const eaTrades = trades.filter((t) => t.source === "ea");
-  const manualTrades = trades.filter((t) => t.source === "manual");
+  // Only setups that reported themselves count; a backfill cannot speak for the EA.
+  const eas = data.eas.filter((ea) => ea.source === "ea");
+  const groups = buildGroups(eas);
+  const groupOf = (key: string): Group => groups.find((g) => g.key === key) ?? MANUAL_GROUP;
+  const trades = buildTrades(deals, eas.map((ea) => ea.magic));
   const since = firstActivity(deals);
+  const tradesOf = (key: string) => trades.filter((t) => t.source === key);
+  const statsOf = (key: string) => computeStats(key === ALL ? trades : tradesOf(key), nowSeconds, since);
+  const balance = snapshot?.account.balance ?? 0;
 
-  const eaStats = computeStats(eaTrades, nowSeconds, since);
-  const manualStats = computeStats(manualTrades, nowSeconds, since);
-  const allStats = computeStats(trades, nowSeconds, since);
   const cash = cashFlow(deals);
-  const deposits = cash.net;
-  const tradingResult = snapshot ? snapshot.account.balance - cash.net : 0;
-  const age = snapshot ? nowSeconds - snapshot.receivedAt : null;
+  const tradingResult = snapshot ? balance - cash.net : 0;
+  const manualNet = statsOf(MANUAL).net;
 
-  const benchmark: BenchmarkRow[] = [
-    { metric: "Trades", live: String(eaStats.count), backtest: String(BACKTEST.trades) },
-    { metric: "Win rate", live: formatPercent(eaStats.winRate), backtest: formatPercent(BACKTEST.winRate) },
-    { metric: "Average per trade", live: formatR(eaStats.avgR), backtest: formatR(BACKTEST.avgR) },
-    { metric: "Trades per month", live: eaStats.count ? formatNumber(eaStats.tradesPerMonth, 1) : "–", backtest: BACKTEST.tradesPerMonth.toFixed(1) },
-    { metric: "Worst drawdown", live: eaStats.rCount ? `${eaStats.maxDrawdownR.toFixed(1)}R` : "–", backtest: `${BACKTEST.maxDrawdownR}R` },
-    { metric: "Longest losing streak", live: eaStats.count ? String(eaStats.longestLosingStreak) : "–", backtest: String(BACKTEST.longestLosingStreak) },
-  ];
+  const setups: SetupView[] = eas.map((ea) => {
+    const group = groupOf(String(ea.magic));
+    const setupTrades = tradesOf(group.key);
+    const stats = statsOf(group.key);
+    return {
+      ...group,
+      market: `${ea.symbol} · ${ea.timeframe}`,
+      status: statusOf(ea, nowSeconds),
+      risk: `${ea.risk_pct}% per trade`,
+      riskMoney: formatMoney((balance * ea.risk_pct) / 100),
+      filterOn: ea.use_vol,
+      ratio: ea.ratio,
+      ratioMin: ea.vol_min,
+      lossesToday: ea.losses_today,
+      net: formatSignedMoney(stats.net),
+      netOutcome: outcomeOf(stats.net),
+      comparison: comparisonFor(setupTrades, stats, backtestFor(ea.timeframe)),
+    };
+  });
 
-  const expected: ExpectedPoint[] = expectedPath(Math.max(MIN_CHART_TRADES, eaStats.rCount + 10));
-  const stats: Record<TradeFilter, StatItem[]> = {
-    ea: statItems(eaStats, true),
-    manual: statItems(manualStats, false),
-    all: statItems(allStats, false),
-  };
+  const stats: Record<string, StatItem[]> = Object.fromEntries([
+    ...groups.map((g) => [g.key, statItems(statsOf(g.key), g.key !== MANUAL)] as const),
+    [ALL, statItems(statsOf(ALL), false)] as const,
+  ]);
 
   const positions: PositionRow[] = (snapshot?.positions ?? []).map((p) => ({
     ticket: p.ticket,
-    source: p.magic === magic ? "ea" : "manual",
+    group: groupOf(String(p.magic)),
     side: p.type,
     volume: p.volume.toFixed(2),
     entry: formatPrice(p.price_open),
@@ -200,29 +252,20 @@ export function buildView(data: DashboardData, nowSeconds: number) {
 
   return {
     hasData: snapshot !== null,
-    status: eaStatus(snapshot, age),
+    groups,
+    setups,
+    accountDetail: snapshot
+      ? `Account data ${snapshot.source === "backfill" ? "loaded from MT5" : "reported"} ${formatAge(nowSeconds - snapshot.receivedAt)}`
+      : "No data yet",
     account: snapshot && {
       name: `${snapshot.account.server} · ${snapshot.account.login}`,
-      balance: formatMoney(snapshot.account.balance),
+      balance: formatMoney(balance),
       equity: formatMoney(snapshot.account.equity),
-      deposits: formatMoney(deposits),
-      total: formatSignedMoney(snapshot.account.balance - deposits),
-      totalOutcome: outcomeOf(snapshot.account.balance - deposits),
-      ea: formatSignedMoney(eaStats.net),
-      eaOutcome: outcomeOf(eaStats.net),
-      manual: formatSignedMoney(manualStats.net),
-      manualOutcome: outcomeOf(manualStats.net),
-    },
-    market: snapshot ? `${snapshot.ea.symbol} · ${snapshot.ea.timeframe}` : "XAUUSD",
-    // Only the EA knows its own settings and the current ratio; a backfill does not.
-    ea: !snapshot || snapshot.source === "backfill" ? null : {
-      market: `${snapshot.ea.symbol} · ${snapshot.ea.timeframe}`,
-      risk: `${snapshot.ea.risk_pct}% per trade`,
-      riskMoney: formatMoney((snapshot.account.balance * snapshot.ea.risk_pct) / 100),
-      filterOn: snapshot.ea.use_vol,
-      ratio: snapshot.ea.ratio,
-      ratioMin: snapshot.ea.vol_min,
-      lossesToday: snapshot.ea.losses_today,
+      deposits: formatMoney(cash.net),
+      total: formatSignedMoney(tradingResult),
+      totalOutcome: outcomeOf(tradingResult),
+      manual: formatSignedMoney(manualNet),
+      manualOutcome: outcomeOf(manualNet),
     },
     cash: {
       hasMoves: cash.moves.length > 0,
@@ -230,38 +273,37 @@ export function buildView(data: DashboardData, nowSeconds: number) {
       withdrawn: formatMoney(cash.withdrawn),
       adjustments: cash.adjustments === 0 ? null : formatSignedMoney(cash.adjustments),
       net: formatMoney(cash.net),
-      balance: snapshot ? formatMoney(snapshot.account.balance) : "–",
+      balance: snapshot ? formatMoney(balance) : "–",
       result: formatSignedMoney(tradingResult),
       resultOutcome: outcomeOf(tradingResult),
       summary: !snapshot
         ? ""
         : cash.net <= 0
-          ? `You have withdrawn ${formatMoney(-cash.net)} more than you deposited, and ${formatMoney(snapshot.account.balance)} is still in the account.`
-          : `Of the ${formatMoney(cash.net)} of your own money still in, ${formatMoney(snapshot.account.balance)} is left.`,
+          ? `You have withdrawn ${formatMoney(-cash.net)} more than you deposited, and ${formatMoney(balance)} is still in the account.`
+          : `Of the ${formatMoney(cash.net)} of your own money still in, ${formatMoney(balance)} is left.`,
       rows: [...cash.moves].reverse().map(
         (m): CashRow => ({ ticket: m.ticket, time: formatDateTime(m.time), kind: m.kind, amount: formatSignedMoney(m.amount), note: m.note || "–" }),
       ),
     },
     calendar: {
       days: dailyResults(trades),
+      groups,
       firstMonth: dayKey(trades[0]?.closeTime ?? nowSeconds).slice(0, 7),
       lastMonth: dayKey(nowSeconds).slice(0, 7),
       today: dayKey(nowSeconds),
     },
     positions,
-    benchmark,
-    verdict: verdictText(eaStats),
-    edge: { live: edgePoints(eaTrades), expected },
     pnl: {
-      points: pnlPoints(trades),
+      series: groups,
+      points: pnlPoints(trades, groups),
       startTime: since ?? nowSeconds - 86400,
       endTime: nowSeconds,
       startLabel: formatDate(since ?? nowSeconds - 86400),
       endLabel: "Now",
     },
-    tradeRows: trades.map(tradeRow),
+    tradeRows: trades.map((trade) => tradeRow(trade, groupOf(trade.source))),
     stats,
-    signals: [...signals].reverse().slice(0, MAX_SIGNAL_ROWS).map(signalRow),
+    signals: [...signals].reverse().slice(0, MAX_SIGNAL_ROWS).map((s) => signalRow(s, groups.find((g) => g.key === String(s.magic)))),
     signalCounts: {
       total: signals.length,
       traded: signals.filter((s) => s.action === "traded").length,

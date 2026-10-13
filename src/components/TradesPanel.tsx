@@ -1,12 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import type { Group } from "@/lib/groups";
 
-export type TradeFilter = "ea" | "manual" | "all";
+const ALL = "all";
 
 export interface TradeRow {
   id: number;
-  source: "ea" | "manual";
+  /** Key of the group that opened the trade. */
+  source: string;
+  sourceLabel: string;
+  color: number;
   closed: string;
   side: "buy" | "sell";
   volume: string;
@@ -25,40 +29,31 @@ export interface StatItem {
 }
 
 interface TradesPanelProps {
+  groups: Group[];
   rows: TradeRow[];
-  stats: Record<TradeFilter, StatItem[]>;
+  /** Stats per group key, plus "all". */
+  stats: Record<string, StatItem[]>;
 }
 
-const TABS: Array<{ key: TradeFilter; label: string }> = [
-  { key: "ea", label: "EA" },
-  { key: "manual", label: "Manual" },
-  { key: "all", label: "All" },
-];
-
-export function TradesPanel({ rows, stats }: TradesPanelProps) {
-  const [filter, setFilter] = useState<TradeFilter>("ea");
-  const visible = rows.filter((row) => filter === "all" || row.source === filter);
-  const countFor = (key: TradeFilter) => rows.filter((row) => key === "all" || row.source === key).length;
+export function TradesPanel({ groups, rows, stats }: TradesPanelProps) {
+  const tabs = [...groups.map((g) => ({ key: g.key, label: g.label })), { key: ALL, label: "All" }];
+  const [filter, setFilter] = useState(tabs[0].key);
+  const active = tabs.some((tab) => tab.key === filter) ? filter : tabs[0].key;
+  const matches = (row: TradeRow, key: string) => key === ALL || row.source === key;
+  const visible = rows.filter((row) => matches(row, active));
 
   return (
     <div>
-      <div className="tabs" role="tablist" aria-label="Trade source">
-        {TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            role="tab"
-            aria-selected={filter === tab.key}
-            className="tab"
-            onClick={() => setFilter(tab.key)}
-          >
-            {tab.label} <span className="tab-count">{countFor(tab.key)}</span>
+      <div className="tabs" role="tablist" aria-label="Whose trades to show">
+        {tabs.map((tab) => (
+          <button key={tab.key} type="button" role="tab" aria-selected={active === tab.key} className="tab" onClick={() => setFilter(tab.key)}>
+            {tab.label} <span className="tab-count">{rows.filter((row) => matches(row, tab.key)).length}</span>
           </button>
         ))}
       </div>
 
       <dl className="stat-strip">
-        {stats[filter].map((item) => (
+        {(stats[active] ?? []).map((item) => (
           <div key={item.label}>
             <dt>{item.label}</dt>
             <dd>{item.value}</dd>
@@ -67,7 +62,7 @@ export function TradesPanel({ rows, stats }: TradesPanelProps) {
       </dl>
 
       {visible.length === 0 ? (
-        <p className="empty">{filter === "ea" ? "The EA has not closed a trade yet." : "No closed trades here yet."}</p>
+        <p className="empty">No closed trades here yet.</p>
       ) : (
         <div className="table-scroll">
           <table className="ledger">
@@ -89,7 +84,7 @@ export function TradesPanel({ rows, stats }: TradesPanelProps) {
               {[...visible].reverse().map((row) => (
                 <tr key={row.id}>
                   <td>{row.closed}</td>
-                  <td><span className={`tag tag-${row.source}`}>{row.source === "ea" ? "EA" : "Manual"}</span></td>
+                  <td><span className={`tag tag-c${row.color}`}>{row.sourceLabel}</span></td>
                   <td className="side">{row.side}</td>
                   <td className="num">{row.volume}</td>
                   <td className="num">{row.entry}</td>

@@ -48,6 +48,12 @@ npm test
 
 To load history from before the EA was connected, run `python scripts/seed_from_mt5.py https://<your-site>.vercel.app 90` with `INGEST_TOKEN` set in the environment.
 
+## Several setups on one account
+
+Each setup is one copy of the EA on its own chart, with its own `InpMagic` and `InpSetupName`. Every copy reports to the same address with the same token. The dashboard keeps one status per magic number and splits trades, the calendar, the profit chart, the backtest comparison and the signal log by setup. Trades whose magic number belongs to no reporting setup count as manual.
+
+Backtest figures per timeframe live in `src/lib/benchmark.ts`.
+
 ## Notes
 
 - Reporting cannot place or change trades. It stays quiet for 12 seconds either side of a candle close so it never delays an entry, and backs off for two minutes after a failed report.

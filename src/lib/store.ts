@@ -2,26 +2,32 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Redis } from "@upstash/redis";
 import { signalKey } from "./normalize";
-import type { DashboardData, Deal, Signal, Snapshot } from "./types";
+import type { DashboardData, Deal, EaState, Signal, Snapshot } from "./types";
 
 const KEY_SNAPSHOT = "ac:snapshot";
 const KEY_DEALS = "ac:deals";
 const KEY_SIGNALS = "ac:signals";
+const KEY_EAS = "ac:eas";
+/** Signals stored before setups carried their own magic number belong to the first setup. */
+const LEGACY_MAGIC = 20261013;
 
 // Oldest rows are dropped past these, so history cannot grow without bound.
 const MAX_STORED_DEALS = 5000;
 const MAX_STORED_SIGNALS = 2000;
 
 export interface Store {
-  /** Stores deals and signals, and replaces the snapshot unless `snapshot` is null. */
-  save(snapshot: Snapshot | null, deals: Deal[], signals: Signal[]): Promise<void>;
+  /** Stores deals and signals; replaces the account snapshot and the setup's state unless they are null. */
+  save(snapshot: Snapshot | null, ea: EaState | null, deals: Deal[], signals: Signal[]): Promise<void>;
   load(): Promise<DashboardData>;
   loadSnapshot(): Promise<Snapshot | null>;
+  loadEa(magic: number): Promise<EaState | null>;
   /** Counts a hit against `key` and returns the count inside the current window. */
   hit(key: string, windowSeconds: number): Promise<number>;
 }
 
 const byTime = <T extends { time: number }>(rows: T[]) => [...rows].sort((a, b) => a.time - b.time);
+const withMagic = (signals: Signal[]): Signal[] => signals.map((s) => ({ ...s, magic: s.magic ?? LEGACY_MAGIC }));
+const byMagic = (eas: EaState[]) => [...eas].sort((a, b) => a.magic - b.magic);
 
 /** Keys of the oldest rows beyond `limit`. */
 function overflowKeys<T extends { time: number }>(rows: Record<string, T>, limit: number): string[] {
@@ -38,10 +44,11 @@ async function trimHash<T extends { time: number }>(redis: Redis, key: string, l
 
 function redisStore(redis: Redis): Store {
   return {
-    async save(snapshot, deals, signals) {
+    async save(snapshot, ea, deals, signals) {
       const tx = redis.multi();
       if (snapshot) tx.set(KEY_SNAPSHOT, snapshot);
       else tx.exists(KEY_SNAPSHOT); // keeps the transaction non-empty
+      if (ea) tx.hset(KEY_EAS, { [String(ea.magic)]: ea });
       if (deals.length) tx.hset(KEY_DEALS, Object.fromEntries(deals.map((d) => [String(d.ticket), d])));
       if (signals.length) tx.hset(KEY_SIGNALS, Object.fromEntries(signals.map((s) => [signalKey(s), s])));
       await tx.exec();
@@ -51,19 +58,24 @@ function redisStore(redis: Redis): Store {
       ]);
     },
     async load() {
-      const [snapshot, deals, signals] = await Promise.all([
+      const [snapshot, eas, deals, signals] = await Promise.all([
         redis.get<Snapshot>(KEY_SNAPSHOT),
+        redis.hgetall<Record<string, EaState>>(KEY_EAS),
         redis.hgetall<Record<string, Deal>>(KEY_DEALS),
         redis.hgetall<Record<string, Signal>>(KEY_SIGNALS),
       ]);
       return {
         snapshot: snapshot ?? null,
+        eas: byMagic(Object.values(eas ?? {})),
         deals: byTime(Object.values(deals ?? {})),
-        signals: byTime(Object.values(signals ?? {})),
+        signals: withMagic(byTime(Object.values(signals ?? {}))),
       };
     },
     async loadSnapshot() {
       return (await redis.get<Snapshot>(KEY_SNAPSHOT)) ?? null;
+    },
+    async loadEa(magic) {
+      return (await redis.hget<EaState>(KEY_EAS, String(magic))) ?? null;
     },
     async hit(key, windowSeconds) {
       // Create the key with its expiry first, so a counter can never be left without one.
@@ -73,7 +85,7 @@ function redisStore(redis: Redis): Store {
   };
 }
 
-type FileState = { snapshot: Snapshot | null; deals: Record<string, Deal>; signals: Record<string, Signal> };
+type FileState = { snapshot: Snapshot | null; eas?: Record<string, EaState>; deals: Record<string, Deal>; signals: Record<string, Signal> };
 
 /** Local development only: one JSON file, so the app runs without a database. */
 function fileStore(file: string): Store {
@@ -87,16 +99,18 @@ function fileStore(file: string): Store {
     }
   };
   return {
-    async save(snapshot, deals, signals) {
+    async save(snapshot, ea, deals, signals) {
       const state = await read();
       const merged: FileState = {
         snapshot: snapshot ?? state.snapshot,
+        eas: ea ? { ...state.eas, [String(ea.magic)]: ea } : state.eas,
         deals: { ...state.deals, ...Object.fromEntries(deals.map((d) => [String(d.ticket), d])) },
         signals: { ...state.signals, ...Object.fromEntries(signals.map((s) => [signalKey(s), s])) },
       };
       const without = <T,>(rows: Record<string, T>, keys: string[]) => Object.fromEntries(Object.entries(rows).filter(([k]) => !keys.includes(k)));
       const next: FileState = {
         snapshot: merged.snapshot,
+        eas: merged.eas,
         deals: without(merged.deals, overflowKeys(merged.deals, MAX_STORED_DEALS)),
         signals: without(merged.signals, overflowKeys(merged.signals, MAX_STORED_SIGNALS)),
       };
@@ -107,9 +121,13 @@ function fileStore(file: string): Store {
       const state = await read();
       return {
         snapshot: state.snapshot,
+        eas: byMagic(Object.values(state.eas ?? {})),
         deals: byTime(Object.values(state.deals)),
-        signals: byTime(Object.values(state.signals)),
+        signals: withMagic(byTime(Object.values(state.signals))),
       };
+    },
+    async loadEa(magic) {
+      return (await read()).eas?.[String(magic)] ?? null;
     },
     async loadSnapshot() {
       return (await read()).snapshot;

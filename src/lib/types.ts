@@ -59,7 +59,11 @@ export const signalSchema = z.object({
   lots: num,
   stop: num,
   target: num,
+  // Which setup saw the signal. The EA leaves it out; the server fills it in from the report.
+  magic: num.optional(),
 });
+
+export const DEFAULT_SETUP_NAME = "AlphaCore";
 
 export const reportSchema = z.object({
   v: z.literal(1),
@@ -78,6 +82,8 @@ export const reportSchema = z.object({
     leverage: num,
   }),
   ea: z.object({
+    // Several setups can run on one account, each with its own magic number and name.
+    name: text(32).default(DEFAULT_SETUP_NAME),
     symbol: text(32),
     timeframe: text(16),
     risk_pct: num,
@@ -95,14 +101,19 @@ export const reportSchema = z.object({
 
 export type Position = z.infer<typeof positionSchema>;
 export type Deal = z.infer<typeof dealSchema>;
-export type Signal = z.infer<typeof signalSchema>;
+export type Signal = z.infer<typeof signalSchema> & { magic: number };
 export type Report = z.infer<typeof reportSchema>;
 
 /** What the dashboard keeps from the latest report. All times are UTC epoch seconds. */
 export type Snapshot = Pick<Report, "account" | "ea" | "positions" | "source"> & { receivedAt: number };
 
+/** The latest state one setup reported about itself. */
+export type EaState = Report["ea"] & { receivedAt: number; source: Report["source"] };
+
 export type DashboardData = {
   snapshot: Snapshot | null;
+  /** One entry per setup that has ever reported, keyed by magic number. */
+  eas: EaState[];
   deals: Deal[];
   signals: Signal[];
 };

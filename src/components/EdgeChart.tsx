@@ -15,6 +15,8 @@ export interface EdgePoint {
 interface EdgeChartProps {
   live: EdgePoint[];
   expected: ExpectedPoint[];
+  /** Palette slot of the setup being shown. */
+  color: number;
 }
 
 const WIDTH = 720;
@@ -22,7 +24,8 @@ const HEIGHT = 300;
 const MARGIN = { top: 16, right: 76, bottom: 34, left: 44 };
 
 /** Live cumulative R against the path the backtest expects, by trade number. */
-export function EdgeChart({ live, expected }: EdgeChartProps) {
+export function EdgeChart({ live, expected, color }: EdgeChartProps) {
+  const seriesColor = `var(--series-${color})`;
   const [active, setActive] = useState<number | null>(null);
   const last = expected[expected.length - 1];
   const values = [last.low, last.high, ...expected.map((p) => p.low), ...live.map((p) => p.cumulative)];
@@ -47,7 +50,7 @@ export function EdgeChart({ live, expected }: EdgeChartProps) {
   return (
     <figure className="chart">
       <div className="legend" aria-hidden="true">
-        <span><i className="swatch swatch-line" style={{ background: "var(--series-ea)" }} />Live</span>
+        <span><i className="swatch swatch-line" style={{ background: seriesColor }} />Live</span>
         <span><i className="swatch swatch-line" style={{ background: "var(--ink-3)" }} />Backtest average</span>
         <span><i className="swatch swatch-band" />Range for about 95% of backtest-like runs</span>
       </div>
@@ -63,15 +66,15 @@ export function EdgeChart({ live, expected }: EdgeChartProps) {
           {niceTicks(0, last.n, 6).map((tick) => (
             <text key={tick} x={x(tick)} y={HEIGHT - MARGIN.bottom + 16} className="tick" textAnchor="middle">{tick}</text>
           ))}
-          <text x={(MARGIN.left + WIDTH - MARGIN.right) / 2} y={HEIGHT - 2} className="axis-title" textAnchor="middle">EA trades closed</text>
+          <text x={(MARGIN.left + WIDTH - MARGIN.right) / 2} y={HEIGHT - 2} className="axis-title" textAnchor="middle">Trades closed by this setup</text>
 
           <path d={band} className="band" />
           <path d={linePath(expected.map((p) => [x(p.n), y(p.expected)]))} className="line line-reference" />
           <text x={x(last.n) + 6} y={y(last.expected)} className="direct-label" dominantBaseline="middle">{formatR(last.expected, 1)}</text>
 
-          {live.length > 0 && <path d={linePath(liveLine)} className="line line-ea" />}
+          {live.length > 0 && <path d={linePath(liveLine)} className="line" style={{ stroke: seriesColor }} />}
           {live.map((p, i) => (
-            <circle key={p.n} cx={x(p.n)} cy={y(p.cumulative)} r={active === i ? 5 : 3.5} className="dot dot-ea" />
+            <circle key={p.n} cx={x(p.n)} cy={y(p.cumulative)} r={active === i ? 5 : 3.5} className="dot" style={{ fill: seriesColor }} />
           ))}
           {tail && active === null && (
             <text x={x(tail.n) + 8} y={y(tail.cumulative)} className="direct-label direct-label-strong" dominantBaseline="middle">{formatR(tail.cumulative, 1)}</text>

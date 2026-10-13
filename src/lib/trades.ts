@@ -1,6 +1,9 @@
 import type { Deal } from "./types";
 
-export type Source = "ea" | "manual";
+export const MANUAL = "manual";
+
+/** `MANUAL`, or the magic number (as text) of the setup that opened the trade. */
+export type Source = string;
 
 export interface Trade {
   id: number;
@@ -51,7 +54,7 @@ function exitReasonOf(comment: string): Trade["exitReason"] {
 }
 
 /** Groups deals into closed round-trip trades. Positions that are still open are left out. */
-export function buildTrades(deals: Deal[], eaMagic: number): Trade[] {
+export function buildTrades(deals: Deal[], setupMagics: number[]): Trade[] {
   const byPosition = new Map<number, Deal[]>();
   for (const deal of deals) {
     if (deal.type !== "buy" && deal.type !== "sell") continue;
@@ -76,7 +79,7 @@ export function buildTrades(deals: Deal[], eaMagic: number): Trade[] {
     const risk = sum(opens.map((d) => d.risk));
     trades.push({
       id,
-      source: first.magic === eaMagic ? "ea" : "manual",
+      source: setupMagics.includes(first.magic) ? String(first.magic) : MANUAL,
       symbol: first.symbol,
       side: first.type === "buy" ? "buy" : "sell",
       volume: openVolume,

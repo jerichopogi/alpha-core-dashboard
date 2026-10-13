@@ -4,27 +4,39 @@ import { EdgeChart } from "@/components/EdgeChart";
 import { PnlChart } from "@/components/PnlChart";
 import { TradesPanel } from "@/components/TradesPanel";
 import { loadDashboard } from "@/lib/load";
-import type { DashboardView } from "@/lib/view";
+import type { DashboardView, SetupView } from "@/lib/view";
 import { logout } from "./login/actions";
 
 export const dynamic = "force-dynamic";
 
 const RATIO_METER_MAX = 2;
-const STATUS_MARK = { running: "●", down: "▲", unknown: "○" } as const;
+const STATUS_MARK = { running: "●", down: "▲" } as const;
+const CASH_LABEL = { deposit: "Deposit", withdrawal: "Withdrawal", adjustment: "Broker adjustment" } as const;
 
 function Masthead({ view }: { view: DashboardView }) {
   return (
     <header className="masthead">
       <div>
-        <p className="eyebrow">{view.market} · {view.account?.name ?? "no account yet"}</p>
+        <p className="eyebrow">XAUUSD · {view.account?.name ?? "no account yet"}</p>
         <h1 className="title">Alpha Core <em>ledger</em></h1>
       </div>
       <div className="masthead-side">
-        <p className={`status status-${view.status.state}`}>
-          <span className="status-mark" aria-hidden="true">{STATUS_MARK[view.status.state]}</span>
-          {view.status.label}
-        </p>
-        <p className="muted">{view.status.detail}</p>
+        {view.setups.length === 0 ? (
+          <p className="status status-unknown">
+            <span className="status-mark" aria-hidden="true">○</span>Waiting for the EA&apos;s first report
+          </p>
+        ) : (
+          <ul className="status-list" aria-label="EA setups">
+            {view.setups.map((setup) => (
+              <li key={setup.key} className={`status status-${setup.status.state}`} title={setup.status.detail}>
+                <span className="status-mark" aria-hidden="true">{STATUS_MARK[setup.status.state]}</span>
+                <span className="status-name">{setup.label}</span>
+                {setup.status.label}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="muted">{view.accountDetail}</p>
         <form action={logout}>
           <button type="submit" className="link-button">Sign out</button>
         </form>
@@ -33,8 +45,43 @@ function Masthead({ view }: { view: DashboardView }) {
   );
 }
 
+function SetupCard({ setup }: { setup: SetupView }) {
+  const meterPosition = (value: number) => `${Math.min(1, value / RATIO_METER_MAX) * 100}%`;
+  const passes = setup.ratio >= setup.ratioMin;
+
+  return (
+    <div className="ea-card">
+      <div className="ea-card-head">
+        <p className="eyebrow"><span className={`tag tag-c${setup.color}`}>{setup.label}</span> {setup.market}</p>
+        <p className={`muted outcome-${setup.status.state === "running" ? "win" : "loss"}`}>{setup.status.label}</p>
+      </div>
+      <dl className="ea-facts">
+        <div><dt>Risk</dt><dd>{setup.risk} ({setup.riskMoney})</dd></div>
+        <div><dt>Losses today</dt><dd>{setup.lossesToday} of 2</dd></div>
+      </dl>
+      <div className="meter-block">
+        <div className="meter-head">
+          <span>Volatility ratio</span>
+          <strong>{setup.ratio.toFixed(2)}</strong>
+        </div>
+        <div className="meter" role="img" aria-label={`Volatility ratio ${setup.ratio.toFixed(2)}, needs ${setup.ratioMin} to trade`}>
+          <span className="meter-fill" style={{ width: meterPosition(setup.ratio) }} />
+          <span className="meter-threshold" style={{ left: meterPosition(setup.ratioMin) }} />
+        </div>
+        <p className="muted">
+          {!setup.filterOn
+            ? "Filter is off: every cross is considered."
+            : passes
+              ? `Above ${setup.ratioMin}: a cross now passes the volatility filter.`
+              : `Below ${setup.ratioMin}: a cross now would be skipped.`}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function AccountBlock({ view }: { view: DashboardView }) {
-  const { account, ea } = view;
+  const { account, setups } = view;
   if (!account) return null;
 
   return (
@@ -50,57 +97,31 @@ function AccountBlock({ view }: { view: DashboardView }) {
           <dt>Trading result, all time</dt>
           <dd className={`outcome-${account.totalOutcome}`}>{account.total}</dd>
         </div>
+        {setups.map((setup) => (
+          <div key={setup.key}>
+            <dt><span className={`tag tag-c${setup.color}`}>{setup.label}</span> closed trades</dt>
+            <dd className={`outcome-${setup.netOutcome}`}>{setup.net}</dd>
+          </div>
+        ))}
         <div>
-          <dt><span className="tag tag-ea">EA</span> closed trades</dt>
-          <dd className={`outcome-${account.eaOutcome}`}>{account.ea}</dd>
-        </div>
-        <div>
-          <dt><span className="tag tag-manual">Manual</span> closed trades</dt>
+          <dt><span className="tag tag-c2">Manual</span> closed trades</dt>
           <dd className={`outcome-${account.manualOutcome}`}>{account.manual}</dd>
         </div>
       </dl>
 
-      {ea ? <EaCard ea={ea} /> : (
-        <div className="ea-card">
-          <p className="eyebrow">EA right now</p>
-          <p className="muted ea-waiting">
-            The EA&apos;s risk, losses today and volatility ratio appear here after its first report from the VPS.
-          </p>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function EaCard({ ea }: { ea: NonNullable<DashboardView["ea"]> }) {
-  const meterPosition = (value: number) => `${Math.min(1, value / RATIO_METER_MAX) * 100}%`;
-  const passes = ea.ratio >= ea.ratioMin;
-
-  return (
-      <div className="ea-card">
-        <p className="eyebrow">EA right now</p>
-        <dl className="ea-facts">
-          <div><dt>Risk</dt><dd>{ea.risk} ({ea.riskMoney})</dd></div>
-          <div><dt>Losses today</dt><dd>{ea.lossesToday} of 2</dd></div>
-        </dl>
-        <div className="meter-block">
-          <div className="meter-head">
-            <span>Volatility ratio</span>
-            <strong>{ea.ratio.toFixed(2)}</strong>
+      <div className="ea-cards">
+        {setups.length === 0 ? (
+          <div className="ea-card">
+            <p className="eyebrow">EA right now</p>
+            <p className="muted ea-waiting">
+              Each setup&apos;s risk, losses today and volatility ratio appear here after its first report from the VPS.
+            </p>
           </div>
-          <div className="meter" role="img" aria-label={`Volatility ratio ${ea.ratio.toFixed(2)}, needs ${ea.ratioMin} to trade`}>
-            <span className="meter-fill" style={{ width: meterPosition(ea.ratio) }} />
-            <span className="meter-threshold" style={{ left: meterPosition(ea.ratioMin) }} />
-          </div>
-          <p className="muted">
-            {!ea.filterOn
-              ? "Filter is off: every cross is traded."
-              : passes
-                ? `Above ${ea.ratioMin}: a cross now would be traded.`
-                : `Below ${ea.ratioMin}: a cross now would be skipped.`}
-          </p>
-        </div>
+        ) : (
+          setups.map((setup) => <SetupCard key={setup.key} setup={setup} />)
+        )}
       </div>
+    </section>
   );
 }
 
@@ -123,7 +144,7 @@ function OpenPositions({ view }: { view: DashboardView }) {
               {view.positions.map((p) => (
                 <tr key={p.ticket}>
                   <td>{p.opened}</td>
-                  <td><span className={`tag tag-${p.source}`}>{p.source === "ea" ? "EA" : "Manual"}</span></td>
+                  <td><span className={`tag tag-c${p.group.color}`}>{p.group.label}</span></td>
                   <td className="side">{p.side}</td>
                   <td className="num">{p.volume}</td>
                   <td className="num">{p.entry}</td>
@@ -141,7 +162,84 @@ function OpenPositions({ view }: { view: DashboardView }) {
   );
 }
 
-const CASH_LABEL = { deposit: "Deposit", withdrawal: "Withdrawal", adjustment: "Broker adjustment" } as const;
+function LiveVsBacktest({ view }: { view: DashboardView }) {
+  const compared = view.setups.filter((setup) => setup.comparison !== null);
+  return (
+    <section className="section">
+      <h2 className="section-title">Live against the backtest</h2>
+      {compared.length === 0 && <p className="empty">Each setup is compared with its own backtest here once it has reported.</p>}
+      {compared.map((setup) => {
+        const comparison = setup.comparison;
+        if (!comparison) return null;
+        return (
+          <div key={setup.key} className="setup-compare">
+            <h3 className="setup-title"><span className={`tag tag-c${setup.color}`}>{setup.label}</span> {setup.market}</h3>
+            <p className="lede">{comparison.verdict}</p>
+            <div className="two-up">
+              <EdgeChart live={comparison.live} expected={comparison.expected} color={setup.color} />
+              <table className="ledger compare">
+                <thead>
+                  <tr><th>{setup.label}</th><th className="num">Live</th><th className="num">Backtest</th></tr>
+                </thead>
+                <tbody>
+                  {comparison.rows.map((row) => (
+                    <tr key={row.metric}>
+                      <td>{row.metric}</td>
+                      <td className="num strong">{row.live}</td>
+                      <td className="num">{row.backtest}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="footnote">Backtest, 2021 to October 2026, costs included. {comparison.description}</p>
+          </div>
+        );
+      })}
+      {compared.length > 0 && (
+        <p className="footnote">Each setup was the best of many settings tried, so the real edge is probably smaller than its backtest.</p>
+      )}
+    </section>
+  );
+}
+
+function SignalLog({ view }: { view: DashboardView }) {
+  const { total, traded } = view.signalCounts;
+  return (
+    <section className="section">
+      <h2 className="section-title">Signal log</h2>
+      <p className="lede">
+        {total === 0
+          ? "No EMA crosses recorded yet. Each one appears here with the EA's decision."
+          : `${total} EMA crosses seen, ${traded} traded, ${total - traded} skipped.`}
+      </p>
+      {view.signals.length > 0 && (
+        <div className="table-scroll">
+          <table className="ledger">
+            <thead>
+              <tr>
+                <th>Candle closed</th><th>Setup</th><th>Signal</th><th className="num">Close</th><th className="num">Ratio</th><th>Decision</th><th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.signals.map((s) => (
+                <tr key={s.key}>
+                  <td>{s.time}</td>
+                  <td><span className={`tag tag-c${s.color}`}>{s.setup}</span></td>
+                  <td className="side">{s.dir}</td>
+                  <td className="num">{s.close}</td>
+                  <td className="num">{s.ratio}</td>
+                  <td><span className={`decision decision-${s.action}`}>{s.action === "traded" ? "✓ Traded" : "– Skipped"}</span></td>
+                  <td>{s.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function MoneyInAndOut({ view }: { view: DashboardView }) {
   const { cash } = view;
@@ -190,71 +288,6 @@ function MoneyInAndOut({ view }: { view: DashboardView }) {
   );
 }
 
-function LiveVsBacktest({ view }: { view: DashboardView }) {
-  return (
-    <section className="section">
-      <h2 className="section-title">Live against the backtest</h2>
-      <p className="lede">{view.verdict}</p>
-      <div className="two-up">
-        <EdgeChart live={view.edge.live} expected={view.edge.expected} />
-        <table className="ledger compare">
-          <thead>
-            <tr><th>EA trades</th><th className="num">Live</th><th className="num">Backtest</th></tr>
-          </thead>
-          <tbody>
-            {view.benchmark.map((row) => (
-              <tr key={row.metric}>
-                <td>{row.metric}</td>
-                <td className="num strong">{row.live}</td>
-                <td className="num">{row.backtest}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="footnote">
-        Backtest: 438 trades, 2021 to October 2026, costs included. It was the best of many settings tried, so the real edge is
-        probably smaller, around half.
-      </p>
-    </section>
-  );
-}
-
-function SignalLog({ view }: { view: DashboardView }) {
-  const { total, traded } = view.signalCounts;
-  return (
-    <section className="section">
-      <h2 className="section-title">Signal log</h2>
-      <p className="lede">
-        {total === 0
-          ? "No EMA crosses recorded yet. Each one appears here with the EA's decision."
-          : `${total} EMA crosses seen, ${traded} traded, ${total - traded} skipped.`}
-      </p>
-      {view.signals.length > 0 && (
-        <div className="table-scroll">
-          <table className="ledger">
-            <thead>
-              <tr><th>Candle closed</th><th>Signal</th><th className="num">Close</th><th className="num">Ratio</th><th>Decision</th><th>Detail</th></tr>
-            </thead>
-            <tbody>
-              {view.signals.map((s) => (
-                <tr key={s.key}>
-                  <td>{s.time}</td>
-                  <td className="side">{s.dir}</td>
-                  <td className="num">{s.close}</td>
-                  <td className="num">{s.ratio}</td>
-                  <td><span className={`decision decision-${s.action}`}>{s.action === "traded" ? "✓ Traded" : "– Skipped"}</span></td>
-                  <td>{s.detail}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
-}
-
 export default async function DashboardPage() {
   const view = await loadDashboard();
 
@@ -279,11 +312,11 @@ export default async function DashboardPage() {
       <section className="section">
         <h2 className="section-title">Closed trades</h2>
         <PnlChart {...view.pnl} />
-        <TradesPanel rows={view.tradeRows} stats={view.stats} />
+        <TradesPanel groups={view.groups} rows={view.tradeRows} stats={view.stats} />
       </section>
       <SignalLog view={view} />
       <MoneyInAndOut view={view} />
-      <footer className="footer">Times are Philippine time. Figures refresh every minute; the EA reports every five.</footer>
+      <footer className="footer">Times are Philippine time. Figures refresh every minute; each setup reports every five.</footer>
     </main>
   );
 }

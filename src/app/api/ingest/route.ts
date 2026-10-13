@@ -1,6 +1,6 @@
 import { isCorrectIngestToken } from "@/lib/auth";
 import { normalizeReport } from "@/lib/normalize";
-import { keepsCurrentSnapshot } from "@/lib/snapshot";
+import { keepsCurrentEa, keepsCurrentSnapshot } from "@/lib/snapshot";
 import { getStore } from "@/lib/store";
 import { reportSchema } from "@/lib/types";
 
@@ -36,8 +36,13 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const { snapshot, deals, signals } = normalizeReport(parsed.data, now);
-  const keepCurrent = keepsCurrentSnapshot(await store.loadSnapshot(), snapshot, now);
-  await store.save(keepCurrent ? null : snapshot, deals, signals);
+  const { snapshot, ea, deals, signals } = normalizeReport(parsed.data, now);
+  const [currentSnapshot, currentEa] = await Promise.all([store.loadSnapshot(), store.loadEa(ea.magic)]);
+  await store.save(
+    keepsCurrentSnapshot(currentSnapshot, snapshot, now) ? null : snapshot,
+    keepsCurrentEa(currentEa, ea, now) ? null : ea,
+    deals,
+    signals,
+  );
   return reply(200);
 }

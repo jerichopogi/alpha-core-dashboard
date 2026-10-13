@@ -8,8 +8,8 @@ export interface DayResult {
   /** Philippine calendar date the trades closed on, as YYYY-MM-DD. */
   date: string;
   total: number;
-  ea: number;
-  manual: number;
+  /** Profit by who opened the trades: a setup's magic number, or "manual". */
+  bySource: Record<string, number>;
   trades: number;
   wins: number;
 }
@@ -21,12 +21,11 @@ export function dailyResults(trades: Trade[]): DayResult[] {
   const days = new Map<string, DayResult>();
   for (const trade of trades) {
     const date = dayKey(trade.closeTime);
-    const day = days.get(date) ?? { date, total: 0, ea: 0, manual: 0, trades: 0, wins: 0 };
+    const day = days.get(date) ?? { date, total: 0, bySource: {}, trades: 0, wins: 0 };
     days.set(date, {
       ...day,
       total: day.total + trade.profit,
-      ea: day.ea + (trade.source === "ea" ? trade.profit : 0),
-      manual: day.manual + (trade.source === "manual" ? trade.profit : 0),
+      bySource: { ...day.bySource, [trade.source]: (day.bySource[trade.source] ?? 0) + trade.profit },
       trades: day.trades + 1,
       wins: day.wins + (trade.profit > 0 ? 1 : 0),
     });

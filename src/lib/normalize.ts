@@ -1,4 +1,4 @@
-import type { Deal, Position, Report, Signal, Snapshot } from "./types";
+import type { Deal, EaState, Position, Report, Signal, Snapshot } from "./types";
 
 const HALF_HOUR = 1800;
 
@@ -17,10 +17,11 @@ export function normalizeReport(report: Report, receivedAt: number) {
 
   const positions: Position[] = report.positions.map((p) => ({ ...p, time: toUtc(p.time) }));
   const deals: Deal[] = report.deals.map((d) => ({ ...d, time: toUtc(d.time) }));
-  const signals: Signal[] = report.signals.map((s) => ({ ...s, time: toUtc(s.time) }));
+  const signals: Signal[] = report.signals.map((s) => ({ ...s, time: toUtc(s.time), magic: s.magic ?? report.ea.magic }));
   const snapshot: Snapshot = { account: report.account, ea: report.ea, positions, source: report.source, receivedAt };
+  const ea: EaState = { ...report.ea, source: report.source, receivedAt };
 
-  return { snapshot, deals, signals };
+  return { snapshot, ea, deals, signals };
 }
 
-export const signalKey = (s: Signal) => `${s.time}:${s.dir}`;
+export const signalKey = (s: Signal) => `${s.magic}:${s.time}:${s.dir}`;
