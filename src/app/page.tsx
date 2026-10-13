@@ -1,4 +1,5 @@
 import { AutoRefresh } from "@/components/AutoRefresh";
+import { CalendarPanel } from "@/components/CalendarPanel";
 import { EdgeChart } from "@/components/EdgeChart";
 import { PnlChart } from "@/components/PnlChart";
 import { TradesPanel } from "@/components/TradesPanel";
@@ -269,6 +270,11 @@ export default async function DashboardPage() {
       )}
       <AccountBlock view={view} />
       <OpenPositions view={view} />
+      <section className="section">
+        <h2 className="section-title">Calendar</h2>
+        <p className="lede">Profit and loss from closed trades, by the Philippine day they closed.</p>
+        <CalendarPanel {...view.calendar} />
+      </section>
       <LiveVsBacktest view={view} />
       <section className="section">
         <h2 className="section-title">Closed trades</h2>

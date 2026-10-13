@@ -14,11 +14,11 @@ import {
   formatR,
   formatSignedMoney,
 } from "./format";
+import { dailyResults, dayKey } from "./calendar";
+import { STALE_AFTER_SECONDS } from "./snapshot";
 import { buildTrades, cashFlow, computeStats, firstActivity, type CashKind, type Trade, type TradeStats } from "./trades";
 import type { DashboardData, Signal, Snapshot } from "./types";
 
-/** The EA reports every five minutes; two missed reports in a row counts as silent. */
-const STALE_AFTER_SECONDS = 12 * 60;
 const DEFAULT_EA_MAGIC = 20261013;
 const MIN_CHART_TRADES = 40;
 const MAX_SIGNAL_ROWS = 100;
@@ -241,6 +241,12 @@ export function buildView(data: DashboardData, nowSeconds: number) {
       rows: [...cash.moves].reverse().map(
         (m): CashRow => ({ ticket: m.ticket, time: formatDateTime(m.time), kind: m.kind, amount: formatSignedMoney(m.amount), note: m.note || "–" }),
       ),
+    },
+    calendar: {
+      days: dailyResults(trades),
+      firstMonth: dayKey(trades[0]?.closeTime ?? nowSeconds).slice(0, 7),
+      lastMonth: dayKey(nowSeconds).slice(0, 7),
+      today: dayKey(nowSeconds),
     },
     positions,
     benchmark,
