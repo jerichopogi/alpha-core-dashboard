@@ -5,8 +5,9 @@ import { getStore } from "@/lib/store";
 import { reportSchema } from "@/lib/types";
 
 const MAX_BODY_BYTES = 512 * 1024;
-// The EA reports every few minutes, plus one extra when something changes.
-const MAX_REPORTS_PER_MINUTE = 6;
+// Each copy of the EA reports every few minutes and again when something changes. Several
+// copies can run at once (one per setup on the VPS, plus any left on a PC), so allow bursts.
+const MAX_REPORTS_PER_MINUTE = 30;
 
 const reply = (status: number, error?: string) =>
   Response.json(error ? { success: false, error } : { success: true }, { status });

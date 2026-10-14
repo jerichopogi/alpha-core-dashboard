@@ -25,6 +25,16 @@ export interface Store {
   hit(key: string, windowSeconds: number): Promise<number>;
 }
 
+/**
+ * Increments a counter and makes sure it carries an expiry, in one atomic step.
+ * Two separate calls can race: if the key expires between "set with expiry" and
+ * "increment", the increment recreates it with no expiry and the counter never resets.
+ */
+const HIT_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return count`;
+
 const byTime = <T extends { time: number }>(rows: T[]) => [...rows].sort((a, b) => a.time - b.time);
 const withMagic = (signals: Signal[]): Signal[] => signals.map((s) => ({ ...s, magic: s.magic ?? LEGACY_MAGIC }));
 const byMagic = (eas: EaState[]) => [...eas].sort((a, b) => a.magic - b.magic);
@@ -78,9 +88,7 @@ function redisStore(redis: Redis): Store {
       return (await redis.hget<EaState>(KEY_EAS, String(magic))) ?? null;
     },
     async hit(key, windowSeconds) {
-      // Create the key with its expiry first, so a counter can never be left without one.
-      await redis.set(key, 0, { ex: windowSeconds, nx: true });
-      return redis.incr(key);
+      return Number(await redis.eval(HIT_SCRIPT, [key], [windowSeconds]));
     },
   };
 }
