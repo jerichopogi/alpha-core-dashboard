@@ -195,13 +195,16 @@ function pnlPoints(trades: Trade[], groups: Group[]): PnlPoint[] {
   });
 }
 
-export function buildView(data: DashboardData, nowSeconds: number) {
-  const { snapshot, deals, signals } = data;
+export function buildView(data: DashboardData, nowSeconds: number, retired: readonly number[] = []) {
+  const { snapshot, deals } = data;
+  const isRetired = (magic: number) => retired.includes(magic);
   // Only setups that reported themselves count; a backfill cannot speak for the EA.
-  const eas = data.eas.filter((ea) => ea.source === "ea");
+  const eas = data.eas.filter((ea) => ea.source === "ea" && !isRetired(ea.magic));
+  const signals = data.signals.filter((s) => !isRetired(s.magic));
   const groups = buildGroups(eas);
   const groupOf = (key: string): Group => groups.find((g) => g.key === key) ?? MANUAL_GROUP;
-  const trades = buildTrades(deals, eas.map((ea) => ea.magic));
+  // Retired setups still claim their trades, so those drop out instead of turning manual.
+  const trades = buildTrades(deals, [...eas.map((ea) => ea.magic), ...retired]).filter((t) => !isRetired(Number(t.source)));
   const since = firstActivity(deals);
   const tradesOf = (key: string) => trades.filter((t) => t.source === key);
   const statsOf = (key: string) => computeStats(key === ALL ? trades : tradesOf(key), nowSeconds, since);
