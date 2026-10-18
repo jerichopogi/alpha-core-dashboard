@@ -6,7 +6,7 @@ const CASH_LABEL = { deposit: "Deposit", withdrawal: "Withdrawal", adjustment: "
 export function BacktestPanel({ view }: { view: DashboardView }) {
   const compared = view.setups.filter((setup) => setup.comparison !== null);
   return (
-    <section className="panel span-6" aria-labelledby="bt-title">
+    <section className="panel" aria-labelledby="bt-title">
       <div className="panel-head">
         <h2 id="bt-title" className="panel-title">Live vs backtest</h2>
         <span className="panel-meta">Cumulative R</span>

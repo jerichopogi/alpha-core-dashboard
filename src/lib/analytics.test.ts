@@ -79,6 +79,7 @@ describe("drawdownOf", () => {
     expect(dd.maxPct).toBeCloseTo(0.9988);
     expect(dd.current).toBeCloseTo(50);
     expect(dd.max).toBeCloseTo(99.88);
+    expect(dd.runMaxPct).toBeCloseTo(50 / 200.12);
   });
 
   test("a curve that only rises has no drawdown", () => {

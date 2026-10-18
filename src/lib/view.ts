@@ -263,6 +263,7 @@ export function buildView(data: DashboardData, nowSeconds: number, retired: read
     groupOf,
     tradingResult,
     netDeposited: cash.net,
+    lossesToday: Math.max(0, ...eas.map((ea) => ea.losses_today)),
     nowSeconds,
   });
 

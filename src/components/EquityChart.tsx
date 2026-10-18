@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { formatDateTime, formatMoney, formatPercent, formatWholeMoney } from "@/lib/format";
 import type { EquityChartData, SeriesPoint } from "@/lib/insights";
 import { linePath, linearScale, niceTicks, stepPath, type Scale } from "./chart-utils";
@@ -15,25 +15,24 @@ const RANGES = [
 ] as const;
 type RangeKey = (typeof RANGES)[number]["key"];
 
-const MARGIN = { top: 12, right: 16, bottom: 22, left: 64 };
-const MAIN_HEIGHT = 230;
-const DD_HEIGHT = 96;
+const MARGIN = { top: 12, right: 12, bottom: 26, left: 60 };
+const HEIGHT = { equity: 360, drawdown: 240 } as const;
+const COMPACT_WIDTH = 600;
+const COMPACT_HEIGHT = 230;
 const EQUITY_MATCH_SECONDS = 30 * 60;
 const MIN_DD_DOMAIN = 0.01;
 const PH_OFFSET = 8 * 3600;
 const TICK_STEPS_DAYS = [1, 2, 7, 14, 30, 61, 91, 182, 365];
+const shortDate = new Intl.DateTimeFormat("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric" });
 
 /** Ticks on Philippine midnights, spaced so about `target` of them fit. */
 function dayTicks(start: number, end: number, target: number): number[] {
   const stepDays = TICK_STEPS_DAYS.find((d) => d >= (end - start) / DAY / target) ?? 365;
-  const step = stepDays * DAY;
   const first = Math.ceil((start + PH_OFFSET) / DAY) * DAY - PH_OFFSET;
   const ticks: number[] = [];
-  for (let t = first; t < end; t += step) ticks.push(t);
+  for (let t = first; t < end; t += stepDays * DAY) ticks.push(t);
   return ticks;
 }
-
-const shortDate = new Intl.DateTimeFormat("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric" });
 
 /** Value in effect at time t: the last point at or before it. */
 function valueAt(points: SeriesPoint[], t: number): number | null {
@@ -45,7 +44,7 @@ function valueAt(points: SeriesPoint[], t: number): number | null {
   return found;
 }
 
-/** Points inside [start, end], starting with the value already in effect at `start`. */
+/** Points from `start`, beginning with the value already in effect then. */
 function clip(points: SeriesPoint[], start: number): SeriesPoint[] {
   const before = valueAt(points, start);
   const inside = points.filter((p) => p.t >= start);
@@ -58,65 +57,80 @@ function nearest(points: SeriesPoint[], t: number): SeriesPoint | null {
   return best && Math.abs(best.t - t) <= EQUITY_MATCH_SECONDS ? best : null;
 }
 
-/** Balance from every deal, recorded equity, and the drawdown below them on its own scale. */
-export function EquityChart({ data }: { data: EquityChartData }) {
+interface EquityChartProps {
+  data: EquityChartData;
+  /** "equity": balance area with the recorded equity line. "drawdown": how far below the peak. */
+  mode?: "equity" | "drawdown";
+}
+
+export function EquityChart({ data, mode = "equity" }: EquityChartProps) {
   const [range, setRange] = useState<RangeKey>("all");
   const [hoverT, setHoverT] = useState<number | null>(null);
   const [ref, width] = useWidth<HTMLDivElement>(900);
+  // React ids can hold characters that break url(#…); keep only safe ones.
+  const gradientId = `area-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const height = width < COMPACT_WIDTH ? COMPACT_HEIGHT : HEIGHT[mode];
 
-  // Geometry depends only on the data, range and width, not on where the pointer is.
-  const geometry = useMemo(() => {
+  // Geometry depends only on the data, range, mode and width, not on where the pointer is.
+  const g = useMemo(() => {
     const days = RANGES.find((r) => r.key === range)?.days ?? null;
     const start = Math.max(data.firstTime, days ? data.now - days * DAY : data.firstTime);
     const end = Math.max(data.now, start + 3600);
-    const balance = [...clip(data.balance, start), { t: end, v: valueAt(data.balance, end) ?? 0 }];
+    const close = (points: SeriesPoint[]) => [...clip(points, start), { t: end, v: valueAt(points, end) ?? 0 }];
+    const balance = close(data.balance);
     const equity = data.equity.filter((p) => p.t >= start);
-    const drawdown = [...clip(data.drawdown, start), { t: end, v: valueAt(data.drawdown, end) ?? 0 }];
-
-    const values = [...balance, ...equity].map((p) => p.v);
-    const lo = Math.min(...values);
-    const hi = Math.max(...values);
-    const pad = (hi - lo || Math.abs(hi) * 0.05 || 1) * 0.12;
+    const drawdown = close(data.drawdown);
     const x = linearScale([start, end], [MARGIN.left, width - MARGIN.right]);
-    const y = linearScale([lo - pad, hi + pad], [MAIN_HEIGHT - MARGIN.bottom, MARGIN.top]);
-    const ddMax = Math.max(MIN_DD_DOMAIN, ...drawdown.map((p) => p.v)) * 1.15;
-    const yd = linearScale([0, ddMax], [6, DD_HEIGHT - MARGIN.bottom]);
+    const bottom = height - MARGIN.bottom;
 
-    const toXY = (scale: Scale) => (p: SeriesPoint): [number, number] => [x(p.t), scale(p.v)];
-    const ddPath = stepPath(drawdown.map(toXY(yd)));
-    const ddArea = `${ddPath} V${yd(0).toFixed(1)} H${x(drawdown[0]?.t ?? start).toFixed(1)} Z`;
-    const xTicks = dayTicks(start, end, Math.max(2, Math.floor(width / 110))).filter((t) => x(t) > MARGIN.left + 24 && x(t) < width - MARGIN.right - 24);
-    const balancePath = stepPath(balance.map(toXY(y)));
-    const equityPath = equity.length > 1 ? linePath(equity.map(toXY(y))) : null;
-    return { start, end, balance, equity, drawdown, x, y, yd, ddMax, ddPath, ddArea, xTicks, balancePath, equityPath };
-  }, [data, range, width]);
-  const { start, end, balance, equity, drawdown, x, y, yd, ddMax, ddPath, ddArea, xTicks, balancePath, equityPath } = geometry;
+    let y: Scale;
+    if (mode === "equity") {
+      const values = [...balance, ...equity].map((p) => p.v);
+      const lo = Math.min(...values);
+      const hi = Math.max(...values);
+      const pad = (hi - lo || Math.abs(hi) * 0.05 || 1) * 0.12;
+      y = linearScale([Math.max(0, lo - pad), hi + pad], [bottom, MARGIN.top]);
+    } else {
+      y = linearScale([Math.max(MIN_DD_DOMAIN, ...drawdown.map((p) => p.v)) * 1.12, 0], [bottom, MARGIN.top]);
+    }
+    const xy = (p: SeriesPoint): [number, number] => [x(p.t), y(p.v)];
+    const main = mode === "equity" ? balance : drawdown;
+    const mainPath = stepPath(main.map(xy));
+    const firstX = x(main[0]?.t ?? start).toFixed(1);
+    const area = mode === "equity" ? `${mainPath} V${bottom} H${firstX} Z` : `${mainPath} V${y(0).toFixed(1)} H${firstX} Z`;
+    const equityPath = mode === "equity" && equity.length > 1 ? linePath(equity.map(xy)) : null;
+    const yTicks = mode === "equity" ? niceTicks(y.domain[0], y.domain[1], 4) : niceTicks(0, y.domain[0], 4);
+    const xTicks = dayTicks(start, end, Math.max(2, Math.floor(width / 120))).filter((t) => x(t) > MARGIN.left + 24 && x(t) < width - MARGIN.right - 24);
+    return { start, end, balance, equity, drawdown, x, y, mainPath, area, equityPath, yTicks, xTicks };
+  }, [data, range, width, mode, height]);
 
   const onMove = (event: React.PointerEvent<SVGRectElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
-    const px = MARGIN.left + ((event.clientX - box.left) / box.width) * (width - MARGIN.left - MARGIN.right);
-    setHoverT(start + ((px - MARGIN.left) / (width - MARGIN.left - MARGIN.right)) * (end - start));
+    setHoverT(g.start + ((event.clientX - box.left) / box.width) * (g.end - g.start));
   };
   const hover = hoverT === null ? null : {
     t: hoverT,
-    balance: valueAt(balance, hoverT),
-    equity: nearest(equity, hoverT),
-    drawdown: valueAt(drawdown, hoverT),
+    balance: valueAt(g.balance, hoverT),
+    equity: nearest(g.equity, hoverT),
+    drawdown: valueAt(g.drawdown, hoverT),
   };
-  const hitbox = (height: number, top: number) => (
-    <rect x={MARGIN.left} y={top} width={width - MARGIN.left - MARGIN.right} height={height} fill="transparent"
-      onPointerMove={onMove} onPointerLeave={() => setHoverT(null)} />
-  );
-  const lastBalance = balance[balance.length - 1]?.v ?? 0;
-  const lastEquity = equity[equity.length - 1]?.v;
+  const hoverY = hover ? (mode === "equity" ? hover.balance : hover.drawdown) : null;
+  const lastBalance = g.balance[g.balance.length - 1]?.v ?? 0;
+  const lastEquity = g.equity[g.equity.length - 1]?.v;
+  const lastDrawdown = g.drawdown[g.drawdown.length - 1]?.v ?? 0;
 
   return (
-    <div className="equity">
+    <div>
       <div className="chart-toolbar">
-        <div className="legend" aria-hidden="true">
-          <span><i className="swatch swatch-line swatch-balance" />Balance {formatMoney(lastBalance)}</span>
-          {lastEquity !== undefined && <span><i className="swatch swatch-line swatch-equity" />Equity {formatMoney(lastEquity)}</span>}
-          <span><i className="swatch swatch-dd" />Drawdown</span>
+        <div className="legend">
+          {mode === "equity" ? (
+            <>
+              <span><i className="swatch swatch-line swatch-balance" aria-hidden="true" />Balance <strong>{formatMoney(lastBalance)}</strong></span>
+              {lastEquity !== undefined && <span><i className="swatch swatch-line swatch-equity" aria-hidden="true" />Equity <strong>{formatMoney(lastEquity)}</strong></span>}
+            </>
+          ) : (
+            <span><i className="swatch swatch-dd" aria-hidden="true" />Below peak now <strong>{formatPercent(lastDrawdown)}</strong></span>
+          )}
         </div>
         <div className="tabs" role="tablist" aria-label="Time range">
           {RANGES.map((r) => (
@@ -126,39 +140,45 @@ export function EquityChart({ data }: { data: EquityChartData }) {
       </div>
 
       <div ref={ref} className="chart-fluid">
-        <svg width={width} height={MAIN_HEIGHT} role="img" aria-label={`Balance over time, now ${formatMoney(lastBalance)}`}>
-          {niceTicks(y.domain[0], y.domain[1], 4).map((tick) => (
+        <svg width={width} height={height} role="img"
+          aria-label={mode === "equity" ? `Balance over time, now ${formatMoney(lastBalance)}` : `Drawdown below the peak, now ${formatPercent(lastDrawdown)}`}>
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" className="area-stop-top" />
+              <stop offset="100%" className="area-stop-bottom" />
+            </linearGradient>
+          </defs>
+          {g.yTicks.map((tick) => (
             <g key={tick}>
-              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y(tick)} y2={y(tick)} className="grid" />
-              <text x={MARGIN.left - 8} y={y(tick)} className="tick" textAnchor="end" dominantBaseline="middle">{formatWholeMoney(tick)}</text>
+              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={g.y(tick)} y2={g.y(tick)} className={tick === 0 && mode === "drawdown" ? "axis-zero" : "grid"} />
+              <text x={MARGIN.left - 10} y={g.y(tick)} className="tick" textAnchor="end" dominantBaseline="middle">
+                {mode === "equity" ? formatWholeMoney(tick) : tick === 0 ? "0%" : `−${formatPercent(tick, 0)}`}
+              </text>
             </g>
           ))}
-          {xTicks.map((t) => (
-            <text key={t} x={x(t)} y={MAIN_HEIGHT - 6} className="tick" textAnchor="middle">{shortDate.format(new Date(t * 1000))}</text>
+          {g.xTicks.map((t) => (
+            <text key={t} x={g.x(t)} y={height - 6} className="tick" textAnchor="middle">{shortDate.format(new Date(t * 1000))}</text>
           ))}
-          <path d={balancePath} className="line line-balance" />
-          {equityPath && <path d={equityPath} className="line line-equity" />}
-          {hover && <line x1={x(hover.t)} x2={x(hover.t)} y1={MARGIN.top} y2={MAIN_HEIGHT - MARGIN.bottom} className="crosshair" />}
-          {hover?.balance != null && <circle cx={x(hover.t)} cy={y(hover.balance)} r={4} className="dot dot-balance" />}
-          {hover?.equity && <circle cx={x(hover.equity.t)} cy={y(hover.equity.v)} r={4} className="dot dot-equity" />}
-          {hitbox(MAIN_HEIGHT - MARGIN.top - MARGIN.bottom, MARGIN.top)}
+          {mode === "equity" ? (
+            <>
+              <path d={g.area} fill={`url(#${gradientId})`} />
+              <path d={g.mainPath} className="line line-balance" />
+              {g.equityPath && <path d={g.equityPath} className="line line-equity" />}
+            </>
+          ) : (
+            <>
+              <path d={g.area} className="dd-area" />
+              <path d={g.mainPath} className="line dd-line" />
+            </>
+          )}
+          {hover && <line x1={g.x(hover.t)} x2={g.x(hover.t)} y1={MARGIN.top} y2={height - MARGIN.bottom} className="crosshair" />}
+          {hover && hoverY !== null && <circle cx={g.x(hover.t)} cy={g.y(hoverY)} r={5} className={`dot ${mode === "equity" ? "dot-balance" : "dd-dot"}`} />}
+          {hover?.equity && mode === "equity" && <circle cx={g.x(hover.equity.t)} cy={g.y(hover.equity.v)} r={4} className="dot dot-equity" />}
+          <rect x={MARGIN.left} y={MARGIN.top} width={Math.max(0, width - MARGIN.left - MARGIN.right)} height={height - MARGIN.top - MARGIN.bottom}
+            fill="transparent" onPointerMove={onMove} onPointerLeave={() => setHoverT(null)} />
         </svg>
-
-        <svg width={width} height={DD_HEIGHT} role="img" aria-label={`Drawdown below the best result, now ${formatPercent(lastOf(drawdown))}`}>
-          {[0, ddMax / 1.15].map((tick) => (
-            <g key={tick}>
-              <line x1={MARGIN.left} x2={width - MARGIN.right} y1={yd(tick)} y2={yd(tick)} className={tick === 0 ? "axis-zero" : "grid"} />
-              <text x={MARGIN.left - 8} y={yd(tick)} className="tick" textAnchor="end" dominantBaseline="middle">{tick === 0 ? "0%" : `−${formatPercent(tick, 0)}`}</text>
-            </g>
-          ))}
-          <path d={ddArea} className="dd-area" />
-          <path d={ddPath} className="line dd-line" />
-          {hover && <line x1={x(hover.t)} x2={x(hover.t)} y1={6} y2={DD_HEIGHT - MARGIN.bottom} className="crosshair" />}
-          {hitbox(DD_HEIGHT - MARGIN.bottom - 6, 6)}
-        </svg>
-
         {hover && (
-          <div className="tooltip" style={{ left: Math.min(x(hover.t), width - 190), top: 24 }}>
+          <div className="tooltip" style={{ left: Math.min(g.x(hover.t), width - 200), top: 16 }}>
             <strong>{formatDateTime(hover.t)}</strong>
             {hover.balance != null && <span>Balance {formatMoney(hover.balance)}</span>}
             {hover.equity && <span>Equity {formatMoney(hover.equity.v)}</span>}
@@ -166,9 +186,9 @@ export function EquityChart({ data }: { data: EquityChartData }) {
           </div>
         )}
       </div>
-      {data.equity.length < 3 && <p className="footnote">Equity is recorded from now on, one point every 15 minutes; the balance line covers the full history.</p>}
+      {mode === "equity" && data.equity.length < 3 && (
+        <p className="footnote">Equity is recorded every 15 minutes from the latest update on; the balance line covers the full history.</p>
+      )}
     </div>
   );
 }
-
-const lastOf = (points: SeriesPoint[]) => points[points.length - 1]?.v ?? 0;

@@ -1,10 +1,11 @@
-import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Plus_Jakarta_Sans } from "next/font/google";
+import Script from "next/script";
+import { THEME_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 import "./charts.css";
 
-const body = IBM_Plex_Sans({ variable: "--font-body", subsets: ["latin"], weight: ["400", "500", "600"] });
-const mono = IBM_Plex_Mono({ variable: "--font-mono", subsets: ["latin"], weight: ["400", "500"] });
+const sans = Plus_Jakarta_Sans({ variable: "--font-sans", subsets: ["latin"], weight: ["400", "500", "600", "700"] });
 
 export const metadata: Metadata = {
   title: "Alpha Core",
@@ -12,10 +13,21 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f4f6fb" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1020" },
+  ],
+};
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${body.variable} ${mono.variable}`}>
-      <body>{children}</body>
+    // The theme script sets data-theme before React hydrates, so the attribute may differ from the server's.
+    <html lang="en" className={sans.variable} suppressHydrationWarning>
+      <body>
+        <Script id="theme" strategy="beforeInteractive">{THEME_SCRIPT}</Script>
+        {children}
+      </body>
     </html>
   );
 }

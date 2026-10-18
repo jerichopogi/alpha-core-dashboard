@@ -13,6 +13,7 @@ import {
   type MonthResult,
 } from "./analytics";
 import { dayKey } from "./calendar";
+import { drawdownObjective, lossCapObjective, monthlyTargetObjective } from "./objectives";
 import { formatDateTime, formatDuration, formatMoney, formatNumber, formatPercent, formatPrice, formatR, formatSignedMoney } from "./format";
 import type { Group } from "./groups";
 import { computeStats, type Trade } from "./trades";
@@ -24,6 +25,7 @@ const MAX_CHART_POINTS = 1200;
 export type Tone = "win" | "loss" | "flat" | "warn" | "neutral";
 
 export interface Kpi {
+  key: "balance" | "equity" | "today" | "risk" | "drawdown" | "result";
   label: string;
   value: string;
   detail: string;
@@ -131,9 +133,11 @@ export function buildInsights(args: {
   groupOf: (key: string) => Group;
   tradingResult: number;
   netDeposited: number;
+  /** Losses today of the EA setup closest to its cap. */
+  lossesToday: number;
   nowSeconds: number;
 }) {
-  const { snapshot, deals, equity, trades, groups, groupOf, tradingResult, netDeposited, nowSeconds } = args;
+  const { snapshot, deals, equity, trades, groups, groupOf, tradingResult, netDeposited, lossesToday, nowSeconds } = args;
   if (!snapshot) return null;
 
   const curve = accountCurve(deals, equity, snapshot);
@@ -146,15 +150,17 @@ export function buildInsights(args: {
   const { equity: eq, balance } = snapshot.account;
 
   const kpis: Kpi[] = [
-    { label: "Balance", value: formatMoney(balance), detail: `Net deposited ${formatMoney(netDeposited)}`, tone: "neutral" },
-    { label: "Equity", value: formatMoney(eq), detail: `Open ${formatSignedMoney(floating)}`, tone: "neutral", detailTone: toneOf(floating) },
+    { key: "balance", label: "Balance", value: formatMoney(balance), detail: `Net deposited ${formatMoney(netDeposited)}`, tone: "neutral" },
+    { key: "equity", label: "Equity", value: formatMoney(eq), detail: `Open ${formatSignedMoney(floating)}`, tone: "neutral", detailTone: toneOf(floating) },
     {
+      key: "today",
       label: "Today",
       value: formatSignedMoney(todayNet),
       detail: `${today.length} closed · open ${formatSignedMoney(floating)}`,
       tone: toneOf(todayNet),
     },
     {
+      key: "risk",
       label: "At risk now",
       value: formatMoney(openRisk),
       detail: noStop
@@ -163,12 +169,13 @@ export function buildInsights(args: {
       tone: noStop ? "warn" : "neutral",
     },
     {
+      key: "drawdown",
       label: "Drawdown",
       value: curve.drawdown.current > 0 ? `−${formatMoney(curve.drawdown.current)}` : formatMoney(0),
       detail: `${formatPercent(curve.drawdown.currentPct)} below peak · worst ${formatPercent(curve.drawdown.maxPct)}`,
       tone: curve.drawdown.current > 0 ? "loss" : "flat",
     },
-    { label: "Trading result", value: formatSignedMoney(tradingResult), detail: "All time, deposits excluded", tone: toneOf(tradingResult) },
+    { key: "result", label: "Trading result", value: formatSignedMoney(tradingResult), detail: "All time, deposits excluded", tone: toneOf(tradingResult) },
   ];
 
   const chart: EquityChartData = {
@@ -204,7 +211,13 @@ export function buildInsights(args: {
     ...groups.map((g) => performanceOf(g.key, g.label, trades.filter((t) => t.source === g.key), nowSeconds)),
   ];
 
-  return { kpis, chart, riskRows, openRisk: formatMoney(openRisk), performance };
+  const objectives = [
+    monthlyTargetObjective(curve.balance, nowSeconds),
+    drawdownObjective(curve.drawdown.currentPct, curve.drawdown.runMaxPct),
+    lossCapObjective(lossesToday),
+  ];
+
+  return { kpis, chart, riskRows, openRisk: formatMoney(openRisk), performance, objectives };
 }
 
 function performanceOf(key: string, label: string, trades: Trade[], nowSeconds: number): PerformanceView {

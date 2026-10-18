@@ -49,6 +49,8 @@ export interface Drawdown {
   currentPct: number;
   max: number;
   maxPct: number;
+  /** Worst percentage since the account last held money (the current run). */
+  runMaxPct: number;
   series: Array<{ time: number; drawdown: number; pct: number }>;
 }
 
@@ -56,6 +58,7 @@ export function drawdownOf(points: BalancePoint[]): Drawdown {
   let peak = points[0]?.result ?? 0;
   let index = 1;
   let peakIndex = 1;
+  let runMaxPct = 0;
   const series = points.map((p, i) => {
     const previous = points[i - 1];
     if (previous && previous.balance > EMPTY_BALANCE) {
@@ -65,15 +68,18 @@ export function drawdownOf(points: BalancePoint[]): Drawdown {
       index = 1;
       peakIndex = 1;
       peak = p.result;
+      runMaxPct = 0;
     }
     peak = Math.max(peak, p.result);
     peakIndex = Math.max(peakIndex, index);
-    return { time: p.time, drawdown: peak - p.result, pct: peakIndex > 0 ? 1 - index / peakIndex : 0 };
+    const pct = peakIndex > 0 ? 1 - index / peakIndex : 0;
+    runMaxPct = Math.max(runMaxPct, pct);
+    return { time: p.time, drawdown: peak - p.result, pct };
   });
   const last = series[series.length - 1] ?? { drawdown: 0, pct: 0 };
   const max = Math.max(0, ...series.map((p) => p.drawdown));
   const maxPct = Math.max(0, ...series.map((p) => p.pct));
-  return { current: last.drawdown, currentPct: last.pct, max, maxPct, series };
+  return { current: last.drawdown, currentPct: last.pct, max, maxPct, runMaxPct, series };
 }
 
 export interface OpenRisk {
