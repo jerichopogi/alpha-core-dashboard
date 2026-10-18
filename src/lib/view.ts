@@ -16,6 +16,7 @@ import {
   formatSignedMoney,
 } from "./format";
 import { buildGroups, MANUAL_GROUP, type Group } from "./groups";
+import { buildInsights } from "./insights";
 import { STALE_AFTER_SECONDS } from "./snapshot";
 import { buildTrades, cashFlow, computeStats, firstActivity, MANUAL, type CashKind, type Trade, type TradeStats } from "./trades";
 import type { DashboardData, EaState, Signal } from "./types";
@@ -253,8 +254,21 @@ export function buildView(data: DashboardData, nowSeconds: number, retired: read
     opened: formatDateTime(p.time),
   }));
 
+  const insights = buildInsights({
+    snapshot,
+    deals,
+    equity: data.equity,
+    trades,
+    groups,
+    groupOf,
+    tradingResult,
+    netDeposited: cash.net,
+    nowSeconds,
+  });
+
   return {
     hasData: snapshot !== null,
+    insights,
     groups,
     setups,
     accountDetail: snapshot

@@ -328,7 +328,7 @@ describe("several setups on one account", () => {
 
   test("the view splits trades, results and backtests per setup", () => {
     const eas = [ea(EA_MAGIC, "AC 15m", "M15"), ea(SECOND_MAGIC, "AC 3m", "M3")];
-    const view = buildView({ snapshot, eas, deals, signals: [] }, NOW);
+    const view = buildView({ snapshot, eas, deals, signals: [], equity: [] }, NOW);
 
     expect(view.setups.map((s) => [s.label, s.net, s.status.state])).toEqual([
       ["AC 15m", "+$80.00", "running"],
@@ -343,13 +343,13 @@ describe("several setups on one account", () => {
 
   test("a setup that stopped reporting shows as silent, and one with trading off as down", () => {
     const eas = [ea(EA_MAGIC, "AC 15m", "M15", { receivedAt: NOW - STALE_AFTER_SECONDS - 1 }), ea(SECOND_MAGIC, "AC 3m", "M3", { algo_enabled: false })];
-    const view = buildView({ snapshot, eas, deals, signals: [] }, NOW);
+    const view = buildView({ snapshot, eas, deals, signals: [], equity: [] }, NOW);
 
     expect(view.setups.map((s) => s.status.label)).toEqual(["Silent", "Algo Trading off"]);
   });
 
   test("trades of a setup that never reported are counted as manual", () => {
-    const view = buildView({ snapshot, eas: [ea(EA_MAGIC, "AC 15m", "M15")], deals, signals: [] }, NOW);
+    const view = buildView({ snapshot, eas: [ea(EA_MAGIC, "AC 15m", "M15")], deals, signals: [], equity: [] }, NOW);
 
     expect(view.tradeRows.map((r) => r.sourceLabel)).toEqual(["AC 15m", "Manual", "Manual"]);
   });
@@ -357,7 +357,7 @@ describe("several setups on one account", () => {
   test("a retired setup leaves the page: no card, trades, results or signals, and its trades are not counted as manual", () => {
     const eas = [ea(EA_MAGIC, "AC 15m", "M15"), ea(SECOND_MAGIC, "AC 3m", "M3", { algo_enabled: false })];
     const signal = (magic: number) => ({ time: NOW - 100, dir: "buy" as const, close: 4180, atr: 2, ratio: 1.3, action: "skipped" as const, reason: "x", lots: 0, stop: 0, target: 0, magic });
-    const view = buildView({ snapshot, eas, deals, signals: [signal(EA_MAGIC), signal(SECOND_MAGIC)] }, NOW, [SECOND_MAGIC]);
+    const view = buildView({ snapshot, eas, deals, signals: [signal(EA_MAGIC), signal(SECOND_MAGIC)], equity: [] }, NOW, [SECOND_MAGIC]);
 
     expect(view.setups.map((s) => s.label)).toEqual(["AC 15m"]);
     expect(view.groups.map((g) => g.label)).toEqual(["AC 15m", "Manual"]);

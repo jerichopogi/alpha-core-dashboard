@@ -2,18 +2,27 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Redis } from "@upstash/redis";
 import { signalKey } from "./normalize";
-import type { DashboardData, Deal, EaState, Signal, Snapshot } from "./types";
+import type { DashboardData, Deal, EaState, EquityPoint, Signal, Snapshot } from "./types";
 
 const KEY_SNAPSHOT = "ac:snapshot";
 const KEY_DEALS = "ac:deals";
 const KEY_SIGNALS = "ac:signals";
 const KEY_EAS = "ac:eas";
+const KEY_EQUITY = "ac:equity";
 /** Signals stored before setups carried their own magic number belong to the first setup. */
 const LEGACY_MAGIC = 20261013;
 
 // Oldest rows are dropped past these, so history cannot grow without bound.
 const MAX_STORED_DEALS = 5000;
 const MAX_STORED_SIGNALS = 2000;
+const MAX_STORED_EQUITY = 4_000; // about 42 days at one point per quarter hour; older history comes from deals
+const EQUITY_BUCKET_SECONDS = 15 * 60;
+
+/** One point per quarter hour: a later report in the same quarter replaces the earlier one. */
+const equityPointOf = (snapshot: Snapshot): [string, EquityPoint] => [
+  String(Math.floor(snapshot.receivedAt / EQUITY_BUCKET_SECONDS) * EQUITY_BUCKET_SECONDS),
+  { time: snapshot.receivedAt, balance: snapshot.account.balance, equity: snapshot.account.equity },
+];
 
 export interface Store {
   /** Stores deals and signals; replaces the account snapshot and the setup's state unless they are null. */
@@ -56,8 +65,10 @@ function redisStore(redis: Redis): Store {
   return {
     async save(snapshot, ea, deals, signals) {
       const tx = redis.multi();
-      if (snapshot) tx.set(KEY_SNAPSHOT, snapshot);
-      else tx.exists(KEY_SNAPSHOT); // keeps the transaction non-empty
+      if (snapshot) {
+        tx.set(KEY_SNAPSHOT, snapshot);
+        tx.hset(KEY_EQUITY, Object.fromEntries([equityPointOf(snapshot)]));
+      } else tx.exists(KEY_SNAPSHOT); // keeps the transaction non-empty
       if (ea) tx.hset(KEY_EAS, { [String(ea.magic)]: ea });
       if (deals.length) tx.hset(KEY_DEALS, Object.fromEntries(deals.map((d) => [String(d.ticket), d])));
       if (signals.length) tx.hset(KEY_SIGNALS, Object.fromEntries(signals.map((s) => [signalKey(s), s])));
@@ -65,20 +76,23 @@ function redisStore(redis: Redis): Store {
       await Promise.all([
         trimHash<Deal>(redis, KEY_DEALS, MAX_STORED_DEALS),
         trimHash<Signal>(redis, KEY_SIGNALS, MAX_STORED_SIGNALS),
+        trimHash<EquityPoint>(redis, KEY_EQUITY, MAX_STORED_EQUITY),
       ]);
     },
     async load() {
-      const [snapshot, eas, deals, signals] = await Promise.all([
+      const [snapshot, eas, deals, signals, equity] = await Promise.all([
         redis.get<Snapshot>(KEY_SNAPSHOT),
         redis.hgetall<Record<string, EaState>>(KEY_EAS),
         redis.hgetall<Record<string, Deal>>(KEY_DEALS),
         redis.hgetall<Record<string, Signal>>(KEY_SIGNALS),
+        redis.hgetall<Record<string, EquityPoint>>(KEY_EQUITY),
       ]);
       return {
         snapshot: snapshot ?? null,
         eas: byMagic(Object.values(eas ?? {})),
         deals: byTime(Object.values(deals ?? {})),
         signals: withMagic(byTime(Object.values(signals ?? {}))),
+        equity: byTime(Object.values(equity ?? {})),
       };
     },
     async loadSnapshot() {
@@ -93,7 +107,13 @@ function redisStore(redis: Redis): Store {
   };
 }
 
-type FileState = { snapshot: Snapshot | null; eas?: Record<string, EaState>; deals: Record<string, Deal>; signals: Record<string, Signal> };
+type FileState = {
+  snapshot: Snapshot | null;
+  eas?: Record<string, EaState>;
+  deals: Record<string, Deal>;
+  signals: Record<string, Signal>;
+  equity?: Record<string, EquityPoint>;
+};
 
 /** Local development only: one JSON file, so the app runs without a database. */
 function fileStore(file: string): Store {
@@ -114,6 +134,7 @@ function fileStore(file: string): Store {
         eas: ea ? { ...state.eas, [String(ea.magic)]: ea } : state.eas,
         deals: { ...state.deals, ...Object.fromEntries(deals.map((d) => [String(d.ticket), d])) },
         signals: { ...state.signals, ...Object.fromEntries(signals.map((s) => [signalKey(s), s])) },
+        equity: snapshot ? { ...state.equity, ...Object.fromEntries([equityPointOf(snapshot)]) } : (state.equity ?? {}),
       };
       const without = <T,>(rows: Record<string, T>, keys: string[]) => Object.fromEntries(Object.entries(rows).filter(([k]) => !keys.includes(k)));
       const next: FileState = {
@@ -121,6 +142,7 @@ function fileStore(file: string): Store {
         eas: merged.eas,
         deals: without(merged.deals, overflowKeys(merged.deals, MAX_STORED_DEALS)),
         signals: without(merged.signals, overflowKeys(merged.signals, MAX_STORED_SIGNALS)),
+        equity: without(merged.equity ?? {}, overflowKeys(merged.equity ?? {}, MAX_STORED_EQUITY)),
       };
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, JSON.stringify(next));
@@ -132,6 +154,7 @@ function fileStore(file: string): Store {
         eas: byMagic(Object.values(state.eas ?? {})),
         deals: byTime(Object.values(state.deals)),
         signals: withMagic(byTime(Object.values(state.signals))),
+        equity: byTime(Object.values(state.equity ?? {})),
       };
     },
     async loadEa(magic) {
@@ -161,7 +184,8 @@ export function getStore(): Store {
   } else if (process.env.NODE_ENV === "production") {
     throw new Error("No database configured: set KV_REST_API_URL and KV_REST_API_TOKEN (Upstash Redis).");
   } else {
-    cached = fileStore(path.join(process.cwd(), ".data", "store.json"));
+    // LOCAL_STORE_FILE lets a preview run on a copy without touching your local history.
+    cached = fileStore(process.env.LOCAL_STORE_FILE ?? path.join(process.cwd(), ".data", "store.json"));
   }
   return cached;
 }

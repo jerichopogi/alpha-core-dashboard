@@ -110,10 +110,15 @@ export type Snapshot = Pick<Report, "account" | "ea" | "positions" | "source"> &
 /** The latest state one setup reported about itself. */
 export type EaState = Report["ea"] & { receivedAt: number; source: Report["source"] };
 
+/** Balance and equity as reported, one point per quarter hour. */
+export type EquityPoint = { time: number; balance: number; equity: number };
+
 export type DashboardData = {
   snapshot: Snapshot | null;
   /** One entry per setup that has ever reported, keyed by magic number. */
   eas: EaState[];
   deals: Deal[];
   signals: Signal[];
+  /** Oldest first; starts when equity recording began, not with the account. */
+  equity: EquityPoint[];
 };

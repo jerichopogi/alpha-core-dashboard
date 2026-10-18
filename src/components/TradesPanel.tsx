@@ -31,8 +31,8 @@ export interface StatItem {
 interface TradesPanelProps {
   groups: Group[];
   rows: TradeRow[];
-  /** Stats per group key, plus "all". */
-  stats: Record<string, StatItem[]>;
+  /** Stats per group key, plus "all". Left out when the page shows them elsewhere. */
+  stats?: Record<string, StatItem[]>;
 }
 
 export function TradesPanel({ groups, rows, stats }: TradesPanelProps) {
@@ -52,19 +52,21 @@ export function TradesPanel({ groups, rows, stats }: TradesPanelProps) {
         ))}
       </div>
 
-      <dl className="stat-strip">
-        {(stats[active] ?? []).map((item) => (
-          <div key={item.label}>
-            <dt>{item.label}</dt>
-            <dd>{item.value}</dd>
-          </div>
-        ))}
-      </dl>
+      {stats && (
+        <dl className="stat-strip">
+          {(stats[active] ?? []).map((item) => (
+            <div key={item.label}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
 
       {visible.length === 0 ? (
         <p className="empty">No closed trades here yet.</p>
       ) : (
-        <div className="table-scroll">
+        <div className="table-scroll scroll-y">
           <table className="ledger">
             <thead>
               <tr>

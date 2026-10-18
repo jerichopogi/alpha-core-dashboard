@@ -12,7 +12,7 @@ export default function LoginPage() {
     <main className="login">
       <form action={action} className="login-card">
         <p className="eyebrow">Alpha Core · XAUUSD</p>
-        <h1 className="login-title">Trading ledger</h1>
+        <h1 className="login-title">Trading dashboard</h1>
         <label className="field">
           <span>Password</span>
           <input type="password" name="password" autoComplete="current-password" autoFocus required maxLength={200} />
@@ -23,7 +23,7 @@ export default function LoginPage() {
           </p>
         )}
         <button type="submit" className="button" disabled={pending}>
-          {pending ? "Checking…" : "Open ledger"}
+          {pending ? "Checking…" : "Open dashboard"}
         </button>
       </form>
     </main>
